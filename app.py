@@ -62,10 +62,13 @@ def get_latest_email():
         session = imap_sessions.get(session_id)
         if not session:
             return jsonify({"error": "Invalid or expired session"}), 401
-
+    
+        session["last_activity"] = time.time()
+    
         mail = session["mail"]
         email_address = session["email"]
         password = session["password"]
+
 
     def reconnect():
         domain = email_address.split('@')[-1].lower()
@@ -125,7 +128,6 @@ def get_latest_email():
     except Exception:
         return jsonify({"error": "Server error"}), 500
 
-# Cleanup thread
 def cleanup_sessions():
     while True:
         time.sleep(60)
@@ -133,7 +135,7 @@ def cleanup_sessions():
         expired = []
         with session_lock:
             for session_id, session in list(imap_sessions.items()):
-                if now - session["last_activity"] > 60:  # 1 min expiry
+                if now - session["last_activity"] > 60:  # expire after 60 seconds of inactivity
                     try:
                         session["mail"].logout()
                     except:
@@ -141,6 +143,7 @@ def cleanup_sessions():
                     expired.append(session_id)
             for session_id in expired:
                 del imap_sessions[session_id]
+
 
 import threading
 threading.Thread(target=cleanup_sessions, daemon=True).start()
