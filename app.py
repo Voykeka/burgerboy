@@ -5,15 +5,12 @@ import uuid
 import time
 import re
 from threading import Lock
-import threading
 
 app = Flask(__name__)
 
-# Thread-safe session storage
 imap_sessions = {}
 session_lock = Lock()
 
-# Supported email domains
 IMAP_CONFIG = {
     "t-online.de": ("secureimap.t-online.de", 993),
     "freenet.de": ("imap.freenet.de", 993)
@@ -69,7 +66,6 @@ def get_latest_email():
         mail = session["mail"]
         email_address = session["email"]
         password = session["password"]
-        session["last_activity"] = time.time()
 
     def reconnect():
         domain = email_address.split('@')[-1].lower()
@@ -91,7 +87,7 @@ def get_latest_email():
         status, messages = mail.search(None, '(FROM "no-reply@m.mail.burgerking.de")')
 
         if status != "OK" or not messages[0]:
-            return jsonify({"error": "No Burger King emails found"}), 404
+            return jsonify({"error": "No emails found"}), 404
 
         latest_id = messages[0].split()[-1]
         status, data = mail.fetch(latest_id, "(RFC822)")
@@ -100,8 +96,15 @@ def get_latest_email():
             return jsonify({"error": "Failed to fetch email"}), 500
 
         msg = email.message_from_bytes(data[0][1])
-        html = None
 
+        # First try to extract from subject
+        subject = msg["Subject"] or ""
+        match = re.search(r"\b(\d{6})\b", subject)
+        if match:
+            return match.group(1), 200, {"Content-Type": "text/plain"}
+
+        # If not found, try to extract from HTML body
+        html = None
         if msg.is_multipart():
             for part in msg.walk():
                 if part.get_content_type() == "text/html":
@@ -110,23 +113,19 @@ def get_latest_email():
         elif msg.get_content_type() == "text/html":
             html = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
 
-        if not html:
-            return jsonify({"error": "No HTML content found"}), 404
+        if html:
+            match = re.search(r"\b(\d{6})\b", html)
+            if match:
+                return match.group(1), 200, {"Content-Type": "text/plain"}
 
-        # Look for a 6-digit numeric code
-        match = re.search(r'\b(\d{6})\b', html)
-        if not match:
-            return jsonify({"error": "Verification code not found"}), 404
-
-        code = match.group(1).strip()
-        return code, 200, {"Content-Type": "text/plain"}
+        return jsonify({"error": "Verification code not found"}), 404
 
     except imaplib.IMAP4.abort:
         return jsonify({"error": "Connection lost"}), 503
     except Exception:
         return jsonify({"error": "Server error"}), 500
 
-# Background session cleanup every 60s
+# Cleanup thread
 def cleanup_sessions():
     while True:
         time.sleep(60)
@@ -134,7 +133,7 @@ def cleanup_sessions():
         expired = []
         with session_lock:
             for session_id, session in list(imap_sessions.items()):
-                if now - session["last_activity"] > 60:  # 1 minute expiry
+                if now - session["last_activity"] > 60:  # 1 min expiry
                     try:
                         session["mail"].logout()
                     except:
@@ -143,5 +142,5 @@ def cleanup_sessions():
             for session_id in expired:
                 del imap_sessions[session_id]
 
-# Start cleanup thread
+import threading
 threading.Thread(target=cleanup_sessions, daemon=True).start()
